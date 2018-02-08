@@ -25,9 +25,35 @@ int *idle_count;
 int *shared_array;
 int *sorting_done;
 
-sem_t *mutex_p;
-sem_t (*sem_A_p)[][2],
-      (*sem_B_p)[][2];
+sem_t *mutex;
+sem_t *sem_A,       /* sem_A has length  n */
+      *sem_B;       /* sem_B has length (n - 1) */
+
+void A_waits_for_B(int index) {
+    if (index < n - 1)
+        if (sem_wait(sem_A + index)) syserr("sem_wait");
+
+    if (index > 0)
+        if (sem_wait(sem_A + index)) syserr("sem_wait");
+}
+
+void B_waits_for_A(int index) {
+    if (sem_wait(sem_B + index)) syserr("sem_wait");
+    if (sem_wait(sem_B + index)) syserr("sem_wait");
+}
+
+void A_notifies_B(int index) {
+    if (index < n - 1)
+        if (sem_post(sem_B + index)) syserr("sem_post");
+
+    if (index > 0)
+        if (sem_post(sem_B + index - 1)) syserr("sem_post");
+}
+
+void B_notifies_A(int index) {
+    if (sem_post(sem_A + index)) syserr("sem_post");
+    if (sem_post(sem_A + index + 1)) syserr("sem_post");
+}
 
 /* returns 0 if the swap has been performed, 1 otherwise */
 int compare_and_swap(int *x, int *y) {
@@ -46,49 +72,61 @@ void proc_A(int index) {
     int *left  = shared_array + 2 * index,
         *right = shared_array + 2 * index + 1;
 
-    for (int round = 0; round < n; round++) {
+    int round;
+    for (round = 0; round < n; round++) {
         /* swap left and right if necessary */
         idle = compare_and_swap(left, right);
 
-        /* notify B(index) and B(index-1) */
-        if (index < n - 1)
-            if (sem_post(&(*sem_B_p)[index    ][0])) syserr("sem_post");
+        if (sem_wait(mutex)) syserr("sem_wait");
+        idle_count[round] += idle;
+        if (idle_count[round] == 2 * n - 1)
+            *sorting_done = 1;
+        if (sem_post(mutex)) syserr("sem_post");
 
-        if (index > 0)
-            if (sem_post(&(*sem_B_p)[index - 1][1])) syserr("sem_post");
+        A_notifies_B(index);
 
-        /* wait for B(index) and B(index-1) */
-        if (index < n - 1)
-            if (sem_wait(&(*sem_A_p)[index][1])) syserr("sem_wait");
+        if (sem_wait(mutex)) syserr("sem_wait");
+        if (*sorting_done) {
+            if (sem_post(mutex)) syserr("sem_post");
+            A_notifies_B(index);
+            break;
+        }
+        if (sem_post(mutex)) syserr("sem_post");
 
-        if (index > 0)
-            if (sem_wait(&(*sem_A_p)[index][0])) syserr("sem_wait");
-
-        /*if (sem_wait(mutex_p) == -1) syserr("sem_wait");*/
-        /*idle_count[round] += idle;*/
-        /*if (idle_count[round] == 2 * n - 1)*/
-            /**sorting_done = 1;*/
+        A_waits_for_B(index);
     }
+    printf("A finished at round %d\n", round);
 }
 
 void proc_B(int index) {
     int idle;
     int *left  = shared_array + 2 * index + 1,
         *right = shared_array + 2 * index + 2;
-    for (int round = 0; round < n; round++) {
-        /* wait for A(index) and A(index+1) */
-        if (sem_wait(&(*sem_B_p)[index][0])) syserr("sem_wait");
+    int round;
+    for (round = 0; round < n; round++) {
+        if (sem_wait(mutex)) syserr("sem_wait");
+        if (*sorting_done) {
+            if (sem_post(mutex)) syserr("sem_post");
+            B_notifies_A(index);
+            break;
+        }
+        if (sem_post(mutex)) syserr("sem_post");
 
-        if (sem_wait(&(*sem_B_p)[index][1])) syserr("sem_wait");
+        B_waits_for_A(index);
 
         /* swap left and right if necessary */
         idle = compare_and_swap(left, right);
 
-        /* notify A(index) and A(index+1) */
-        if (sem_post(&(*sem_A_p)[index    ][1])) syserr("sem_post");
+        if (sem_wait(mutex)) syserr("sem_wait");
+        idle_count[round] += idle;
+        if (idle_count[round] == 2 * n - 1)
+            *sorting_done = 1;
+        if (sem_post(mutex)) syserr("sem_post");
 
-        if (sem_post(&(*sem_A_p)[index + 1][0])) syserr("sem_post");
+        /* notify A(index) and A(index+1) */
+        B_notifies_A(index);
     }
+    printf("Finished at round %d\n", round);
 }
 
 int main() {
@@ -99,36 +137,29 @@ int main() {
     prot = PROT_READ | PROT_WRITE;
     flags = MAP_SHARED | MAP_ANONYMOUS;
 
-    shared_memory = (int *) mmap(NULL, (len + n + 1) * sizeof(int), prot, flags, fd_mem, 0);
+    int mem_size = (len + n + 1) * sizeof(int) + 2 * len * sizeof(sem_t);
+    shared_memory = (int *) mmap(NULL, mem_size, prot, flags, fd_mem, 0);
     if (shared_array == MAP_FAILED) syserr("mmap");
 
     shared_array = shared_memory;
-    idle_count = shared_memory + len;
-    sorting_done = shared_memory + len + n;
+    idle_count = shared_array + len;
+    sorting_done = idle_count + n;
+
+    sem_A = (sem_t *)(sorting_done + 1);
+    sem_B = sem_A + len;
+    mutex = sem_B + len;
 
     for (i = 0; i < len; i++)
         scanf("%d", shared_array + i);
 
     *sorting_done = 0;
 
-    sem_t mutex;
-    sem_t sem_A[len    ][2],      /* Process A(i) waits on sem_A[i] */
-          sem_B[len - 1][2];      /* Process B(i) waits on sem_B[i] */
+    if (sem_init(mutex, 1, 1)) syserr("sem_init");
+    for (i = 0; i < len; i++)
+        if (sem_init(sem_A + i, 1, 0)) syserr("sem_init");
 
-    mutex_p = &mutex;
-    sem_A_p = &sem_A;
-    sem_B_p = &sem_B;
-
-    if (sem_init(&mutex, 1, 1)) syserr("sem_init");
-    for (i = 0; i < len; i++) {
-        if (sem_init(&sem_A[i][0], 1, 0)) syserr("sem_init");
-        if (sem_init(&sem_A[i][1], 1, 0)) syserr("sem_init");
-    }
-
-    for (i = 0; i < len - 1; i++) {
-        if (sem_init(&sem_B[i][0], 1, 0)) syserr("sem_init");
-        if (sem_init(&sem_B[i][1], 1, 0)) syserr("sem_init");
-    }
+    for (i = 0; i < len - 1; i++)
+        if (sem_init(sem_B + i, 1, 0)) syserr("sem_init");
 
     /* spawn n processes of type A */
     for (i = 0; i < n; i++) {
@@ -136,6 +167,7 @@ int main() {
             syserr("fork");
         } else if (pid == 0) {
             proc_A(i);
+            munmap(shared_memory, mem_size);
             return 0;
         }
     }
@@ -146,6 +178,7 @@ int main() {
             syserr("fork");
         } else if (pid == 0) {
             proc_B(i);
+            munmap(shared_memory, mem_size);
             return 0;
         }
     }
@@ -157,5 +190,6 @@ int main() {
         printf("%d\n", shared_array[i]);
     }
 
+    munmap(shared_memory, mem_size);
     return 0;
 }
