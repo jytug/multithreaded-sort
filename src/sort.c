@@ -2,6 +2,7 @@
 
 #include <time.h>
 #include <unistd.h>
+#include <semaphore.h>
 #include <string.h>
 #include <stdio.h>
 #include <sys/mman.h>
@@ -12,44 +13,47 @@
 #include <sys/stat.h>        /* For mode constants */
 #include <fcntl.h>           /* For O_* constants */
 
-#define SHM_BUFFER "/pw_332069_buffer"
-
+int i;
 int n;
 int len;
-int fd_mem;
+int fd_mem = -1;
 int flags, prot;
 
 int pid;
 
 int *shared_array;
 
-int main() {
+void proc_A(int *shared_array, sem_t *mutex, sem_t *sem_A[], sem_t *sem_B[], int ind) {
 
+}
+
+int main() {
     scanf("%d", &n);
     len = 2 * n;
 
-    fd_mem = shm_open(SHM_BUFFER, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
-    if (fd_mem == -1) syserr("shm_open");
-    if (ftruncate(fd_mem, len * sizeof(int)) == -1) syserr("ftruncate");
+    prot = PROT_READ | PROT_WRITE;
+    flags = MAP_SHARED | MAP_ANONYMOUS;
 
-    shared_array = (int *) mmap(NULL, len * sizeof(int),
-                                PROT_READ | PROT_WRITE, MAP_SHARED,
-                                fd_mem, 0);
+    /* shared_array[len] indicates how many processes are finished */
+    shared_array = (int *) mmap(NULL, (len + 1)* sizeof(int), prot, flags, fd_mem, 0);
+    if (shared_array == MAP_FAILED) syserr("mmap");
 
-    // the file will still be available for use?
-    close(fd_mem);
-    shm_unlink(SHM_BUFFER);
-    if ((pid = fork()) == -1) {
-        syserr("fork");
-    } else if (pid == 0) {
-        printf("I am a child! The first three numbers are: %d, %d, %d\n", shared_array[0], shared_array[1], shared_array[2]);
-        shared_array[0] = 6;
-        shared_array[1] = 6;
-        shared_array[2] = 6;
-        printf("I am a child! Now, first three numbers are: %d, %d, %d\n", shared_array[0], shared_array[1], shared_array[2]);
-        return 0;
-    }
-    wait(NULL);
-    printf("I am a parent! Now, first three numbers are: %d, %d, %d\n", shared_array[0], shared_array[1], shared_array[2]);
+    for (i = 0; i < len; i++)
+        scanf("%d", shared_array + i);
+
+    sem_t mutex;
+    sem_t sem_A[len],          /* Process A(i) waits on sem_A[i] */
+          sem_B[len - 1];      /* Process B(i) waits on sem_B[i] */
+
+    if (sem_init(&mutex, 1, 1)) syserr("sem_init");
+    for (i = 0; i < len; i++)
+        if (sem_init(&sem_A[i], 1, 0)) syserr("sem_init");
+
+    for (i = 0; i < len - 1; i++)
+        if (sem_init(&sem_B[i], 1, 0)) syserr("sem_init");
+
+    /* wait for all children to end their work */
+    while (wait(NULL) > 0);
+
     return 0;
 }
