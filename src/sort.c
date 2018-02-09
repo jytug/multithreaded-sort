@@ -26,8 +26,8 @@ int *shared_array;
 int *sorting_done;
 
 sem_t *mutex;
-sem_t *sem_A,       /* sem_A has length  n */
-      *sem_B;       /* sem_B has length (n - 1) */
+sem_t *sem_A,       /* sem_A is of length  n */
+      *sem_B;       /* sem_B is of length (n - 1) */
 
 void A_waits_for_B(int index) {
     if (index < n - 1)
@@ -95,7 +95,6 @@ void proc_A(int index) {
 
         A_waits_for_B(index);
     }
-    printf("A finished at round %d\n", round);
 }
 
 void proc_B(int index) {
@@ -126,7 +125,6 @@ void proc_B(int index) {
         /* notify A(index) and A(index+1) */
         B_notifies_A(index);
     }
-    printf("Finished at round %d\n", round);
 }
 
 int main() {
@@ -186,10 +184,18 @@ int main() {
     /* wait for all children to end their work */
     while (wait(NULL) > 0);
 
+
     for (i = 0; i < len; i++) {
         printf("%d\n", shared_array[i]);
     }
 
+    /* free all resources */
+    if (sem_destroy(mutex)) syserr("sem_destroy");
+    for (i = 0; i < len; i++)
+        if (sem_destroy(sem_A + i)) syserr("sem_destroy");
+
+    for (i = 0; i < len - 1; i++)
+        if (sem_destroy(sem_B + i)) syserr("sem_destroy");
     munmap(shared_memory, mem_size);
     return 0;
 }
